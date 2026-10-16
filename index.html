@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>报告厅舞台升降</title>
+<style>
+  :root { --bg:#eef0f3; --panel:#ffffffee; --ink:#1d2330; --muted:#6b7385; --accent:#d9822b; --accent2:#2b7bd9; --line:#d5d9e0; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#14171d; --panel:#1e232ce8; --ink:#e8ebf1; --muted:#97a0b2; --line:#343b48; } }
+  :root[data-theme="dark"] { --bg:#14171d; --panel:#1e232ce8; --ink:#e8ebf1; --muted:#97a0b2; --line:#343b48; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; overflow:hidden; }
+  #view { position:fixed; inset:0; }
+  .panel { position:fixed; left:16px; top:16px; width:300px; max-width:calc(100vw - 32px); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; backdrop-filter:blur(8px); box-sizing:border-box; }
+  .panel { max-height:calc(100% - 32px); overflow-y:auto; overscroll-behavior:contain; }
+  h1 { font-size:16px; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:12px; }
+  .group { border-top:1px solid var(--line); padding:10px 0 4px; }
+  .group h2 { font-size:13px; margin:0 0 6px; display:flex; justify-content:space-between; align-items:baseline; }
+  .group h2 span { font-weight:400; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .row { display:flex; gap:6px; flex-wrap:wrap; }
+  button { flex:1; min-width:70px; padding:7px 8px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--ink); cursor:pointer; font:inherit; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .bar { height:6px; background:var(--line); border-radius:3px; margin:6px 0 2px; overflow:hidden; }
+  .bar i { display:block; height:100%; width:0; background:var(--accent); }
+  .bar.b i { background:var(--accent2); }
+  label { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin-top:8px; }
+  input[type=range] { flex:1; }
+  .note { font-size:11px; color:var(--muted); margin-top:10px; }
+  .collapse { display:none; }
+  @media (max-width:600px) {
+    .panel { top:auto; bottom:16px; padding:10px 12px; }
+    .sub, .note { display:none; }
+  }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div class="panel">
+  <h1>报告厅舞台 · 升降演示</h1>
+  <div class="sub">依据《报告厅舞台结构》结施-01~04 建模，单位 mm</div>
+
+  <div class="group">
+    <h2>中央圆形升降台 <span id="cTxt">+0 mm</span></h2>
+    <div class="bar"><i id="cBar"></i></div>
+    <div class="row">
+      <button data-act="circleUp">升起 1000</button>
+      <button data-act="circleDown">降至台面</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>后区升降台阶 <span id="sTxt">水平</span></h2>
+    <div class="bar b"><i id="sBar"></i></div>
+    <div class="row">
+      <button data-act="stepsUp">升成台阶</button>
+      <button data-act="stepsDown">合并为平台</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="row">
+      <button class="primary" data-act="demo">▶ 完整演示</button>
+      <button data-act="reset">复位</button>
+    </div>
+    <label>速度 <input id="speed" type="range" min="0.5" max="4" step="0.5" value="1.5"><span id="spTxt">1.5×</span></label>
+    <label><input id="xray" type="checkbox" checked> 台体半透明（看剪叉机构）</label>
+    <label><input id="spin" type="checkbox"> 自动环绕视角</label>
+  </div>
+  <div class="note">圆台 Ø1200，净升高 1000，0.5T；台阶 3 组 550×10000，提升 250/500/750，台阶高差 250，9 支油缸；台面标高 +1500。拖动旋转、滚轮缩放。</div>
+</div>
+
+
+<script type="module">
+import * as THREE from './vendor/three/three.module.js';
+import { OrbitControls } from './vendor/three/OrbitControls.js';
+
+// ---------- 尺寸（米），平面坐标：x 左右，z 由后(CJ)向前(观众侧) ----------
+const STAGE_H = 1.5;          // 舞台面标高
+const DECK_T  = 0.06;         // 面板厚
+const PIT     = 0.42;         // 设备坑深（台面以下）
+const Z0      = -7.4;         // 把 CJ 轴放到 z=-7.4，使台体居中
+
+// 舞台外轮廓（结施-01/02）
+function stageShape() {
+  const s = new THREE.Shape();
+  const W = 8.4, Wf = 13.894, zBack = 0 + Z0, zKnee = 7.8 + Z0, zCG = 12.0 + Z0, zFront = 14.72 + Z0, r = 0.6;
+  // three.js Shape 在 xy 平面，这里用 (x, -z) 绘制，挤出后旋转到水平
+  const P = (x, z) => [x, -z];
+  s.moveTo(...P(-W, zBack));
+  s.lineTo(...P(W, zBack));
+  s.lineTo(...P(W, zKnee));
+  s.lineTo(...P(12.45, zCG));
+  s.lineTo(...P(Wf, zCG));
+  s.lineTo(...P(Wf, zFront - r));
+  s.quadraticCurveTo(...P(Wf, zFront), ...P(Wf - r, zFront));
+  s.lineTo(...P(-Wf + r, zFront));
+  s.quadraticCurveTo(...P(-Wf, zFront), ...P(-Wf, zFront - r));
+  s.lineTo(...P(-Wf, zCG));
+  s.lineTo(...P(-12.45, zCG));
+  s.lineTo(...P(-W, zKnee));
+  s.closePath();
+  return s;
+}
+
+// 中央圆台：直径 1200，位于中轴、CH 轴附近
+const CIRCLE = { x: 0, z: 7.3 + Z0, r: 0.6, lift: 1.0 };
+// 后区台阶：3 条 550×10000，位于 CJ 后墙前（结施-02 斜线填充区 10000 宽）
+const STEP = { len: 10.0, w: 0.55, zStart: 0.2 + Z0, lifts: [0.75, 0.5, 0.25] }; // 由后到前
+
+// ---------- 场景 ----------
+const root = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+root.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+scene.background = new THREE.Color(dark ? 0x14171d : 0xeef0f3);
+scene.fog = new THREE.Fog(scene.background, 40, 90);
+
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 200);
+camera.position.set(15, 13, 22);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.4, -2.5);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+scene.add(new THREE.HemisphereLight(0xffffff, dark ? 0x222630 : 0xb9c0cc, dark ? 0.9 : 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(10, 18, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 14, bottom: -14, near: 1, far: 50 });
+scene.add(sun);
+
+// 地面
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(80, 60), new THREE.MeshStandardMaterial({ color: dark ? 0x1b1f27 : 0xdfe3e8, roughness: 1 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+const grid = new THREE.GridHelper(60, 60, dark ? 0x2c323d : 0xc4cad3, dark ? 0x22272f : 0xd2d7de);
+grid.position.y = 0.002; scene.add(grid);
+
+// 材质
+const M = {
+  body:  new THREE.MeshStandardMaterial({ color: 0x3a3f4a, roughness: 0.8, transparent: true, opacity: 0.28, depthWrite: false }),
+  deck:  new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 0.55, transparent: true, opacity: 0.55 }),
+  circle:new THREE.MeshStandardMaterial({ color: 0xd9822b, roughness: 0.4, metalness: 0.2 }),
+  step:  new THREE.MeshStandardMaterial({ color: 0x2b7bd9, roughness: 0.45, metalness: 0.15 }),
+  steel: new THREE.MeshStandardMaterial({ color: 0x9aa3b0, roughness: 0.35, metalness: 0.7 }),
+  cyl:   new THREE.MeshStandardMaterial({ color: 0xc23b3b, roughness: 0.4, metalness: 0.5 }),
+  pit:   new THREE.MeshStandardMaterial({ color: 0x23272e, roughness: 1 }),
+  stair: new THREE.MeshStandardMaterial({ color: 0x6d5644, roughness: 0.6 }),
+};
+
+// 挖孔：圆台孔 + 台阶坑
+const holeCircle = new THREE.Path(); holeCircle.absarc(CIRCLE.x, -CIRCLE.z, CIRCLE.r + 0.01, 0, Math.PI * 2, true);
+const sz0 = STEP.zStart, sz1 = STEP.zStart + STEP.w * 3 + 0.02, hx = STEP.len / 2 + 0.01;
+const holeSteps = new THREE.Path();
+holeSteps.moveTo(-hx, -sz0); holeSteps.lineTo(-hx, -sz1); holeSteps.lineTo(hx, -sz1); holeSteps.lineTo(hx, -sz0); holeSteps.closePath();
+
+function extrudeStage(depth, mat, y) {
+  const sh = stageShape(); sh.holes.push(holeCircle, holeSteps);
+  const g = new THREE.ExtrudeGeometry(sh, { depth, bevelEnabled: false, curveSegments: 24 });
+  g.rotateX(-Math.PI / 2); // shape 的 (x, -z) → 世界 (x, z)，挤出方向朝 +y
+  const m = new THREE.Mesh(g, mat); m.position.y = y; return m;
+}
+const body = extrudeStage(STAGE_H - DECK_T, M.body, 0); scene.add(body);
+const deck = extrudeStage(DECK_T, M.deck, STAGE_H - DECK_T); deck.receiveShadow = true; scene.add(deck);
+// 台口轮廓线
+const edges = new THREE.LineSegments(new THREE.EdgesGeometry(deck.geometry, 30), new THREE.LineBasicMaterial({ color: dark ? 0x8a93a3 : 0x2a2f38 }));
+edges.position.copy(deck.position); scene.add(edges);
+
+// 设备坑底
+const pitY = STAGE_H - PIT;
+const circlePit = new THREE.Mesh(new THREE.CylinderGeometry(CIRCLE.r + 0.01, CIRCLE.r + 0.01, 0.04, 48), M.pit);
+circlePit.position.set(CIRCLE.x, pitY - 0.02, CIRCLE.z); scene.add(circlePit);
+const stepPit = new THREE.Mesh(new THREE.BoxGeometry(STEP.len + 0.02, 0.04, STEP.w * 3 + 0.02), M.pit);
+stepPit.position.set(0, pitY - 0.02, (sz0 + sz1) / 2); scene.add(stepPit);
+
+// 前区两侧小楼梯（结施-03 楼梯一：1500×1500，6 级×250）
+// 楼梯朝外侧下行：沿 x 方向排布
+for (const s of [-1, 1]) {
+  const g = new THREE.Group();
+  for (let i = 0; i < 5; i++) {
+    const h = 0.25 * (i + 1);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(0.3, h, 1.3), M.stair);
+    b.position.set(s * (14.94 - 0.3 * i - 0.15 + 0.3), h / 2, 13.3 + Z0);
+    b.castShadow = b.receiveShadow = true; g.add(b);
+  }
+  scene.add(g);
+}
+
+// ---------- 剪叉机构 ----------
+// 一个剪叉单元：两根交叉臂，跨距随高度变化；levels 级叠加
+function makeArm(len, thick) {
+  const g = new THREE.BoxGeometry(len, thick, thick);
+  const m = new THREE.Mesh(g, M.steel); m.castShadow = true; return m;
+}
+class Scissor {
+  constructor(parent, armLen, levels, width, thick = 0.05) {
+    this.L = armLen; this.levels = levels; this.width = width;
+    this.group = new THREE.Group(); parent.add(this.group);
+    this.arms = [];
+    for (let k = 0; k < levels; k++) for (const side of [-1, 1]) for (const dir of [0, 1]) {
+      const a = makeArm(armLen, thick); this.group.add(a); this.arms.push({ a, k, side, dir });
+    }
+    // 油缸
+    this.cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1, 12), M.cyl);
+    this.rod = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1, 10), M.steel);
+    this.group.add(this.cyl, this.rod);
+  }
+  // h：底座到顶架的总高度
+  update(h) {
+    const per = Math.max(h / this.levels, 0.04);
+    const span = Math.sqrt(Math.max(this.L * this.L - per * per, 0.0001));
+    const ang = Math.atan2(per, span);
+    for (const { a, k, side, dir } of this.arms) {
+      a.position.set(0, per * k + per / 2, side * this.width / 2);
+      a.rotation.set(0, 0, dir ? ang : -ang);
+    }
+    // 油缸从底座一端斜向第一层中部
+    const p0 = new THREE.Vector3(-span / 2 + 0.05, 0.05, 0), p1 = new THREE.Vector3(span * 0.15, per * 0.75, 0);
+    const v = p1.clone().sub(p0), len = v.length(), mid = p0.clone().add(v.multiplyScalar(0.5));
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), p1.clone().sub(p0).normalize());
+    this.cyl.scale.y = len * 0.55; this.cyl.quaternion.copy(q);
+    this.cyl.position.copy(p0.clone().lerp(p1, 0.275));
+    this.rod.scale.y = len * 0.5; this.rod.quaternion.copy(q);
+    this.rod.position.copy(p0.clone().lerp(p1, 0.75));
+  }
+}
+
+// ---------- 圆形升降台 ----------
+const circleRig = new THREE.Group(); circleRig.position.set(CIRCLE.x, pitY, CIRCLE.z); scene.add(circleRig);
+const circleBase = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.05, 0.7), M.steel); circleBase.position.y = 0.025; circleRig.add(circleBase);
+const circleTop = new THREE.Group(); circleRig.add(circleTop);
+const cTopMesh = new THREE.Mesh(new THREE.CylinderGeometry(CIRCLE.r, CIRCLE.r, 0.08, 64), M.circle);
+cTopMesh.position.y = -0.04; cTopMesh.castShadow = cTopMesh.receiveShadow = true; circleTop.add(cTopMesh);
+// 台面花纹板十字分缝
+const seam = new THREE.Mesh(new THREE.BoxGeometry(CIRCLE.r * 2 - 0.02, 0.002, 0.01), new THREE.MeshBasicMaterial({ color: 0x7a4515 }));
+seam.position.y = 0.001; circleTop.add(seam); const seam2 = seam.clone(); seam2.rotation.y = Math.PI / 2; circleTop.add(seam2);
+// 围挡裙边（升起时可见）
+const skirt = new THREE.Mesh(new THREE.CylinderGeometry(CIRCLE.r - 0.005, CIRCLE.r - 0.005, 1, 64, 1, true), new THREE.MeshStandardMaterial({ color: 0x8c5a2b, roughness: 0.6, side: THREE.DoubleSide }));
+circleTop.add(skirt);
+const circleScissor = new Scissor(circleRig, 0.62, 2, 0.5, 0.045);
+circleScissor.group.position.y = 0.05;
+
+// ---------- 台阶升降台 ----------
+const stepRigs = STEP.lifts.map((lift, i) => {
+  const rig = new THREE.Group();
+  rig.position.set(0, pitY, STEP.zStart + STEP.w * i + STEP.w / 2 + 0.01);
+  scene.add(rig);
+  const top = new THREE.Group(); rig.add(top);
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(STEP.len, 0.08, STEP.w - 0.01), M.step);
+  plate.position.y = -0.04; plate.castShadow = plate.receiveShadow = true; top.add(plate);
+  const front = new THREE.Mesh(new THREE.BoxGeometry(STEP.len, 1, 0.02), new THREE.MeshStandardMaterial({ color: 0x1f5aa3, roughness: 0.6 }));
+  front.position.z = STEP.w / 2 - 0.015; top.add(front);
+  const scissors = [-3.3, 0, 3.3].map(x => { const s = new Scissor(rig, 0.6, 1, 0.42, 0.05); s.group.position.set(x, 0.05, 0); s.group.rotation.y = 0; return s; });
+  const bases = [-3.3, 0, 3.3].map(x => { const b = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.05, 0.46), M.steel); b.position.set(x, 0.025, 0); rig.add(b); return b; });
+  return { rig, top, front, scissors, lift, cur: 0 };
+});
+
+// ---------- 状态与动画 ----------
+const state = { circle: 0, circleTarget: 0, steps: 0, stepsTarget: 0 }; // 0~1 归一化
+let speed = 1.5;
+const BASE_SPEED_C = 1 / 6;  // 圆台：6 s 全程（×速度倍率）
+const BASE_SPEED_S = 1 / 5;  // 台阶：5 s 全程
+
+const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+let demo = null;
+
+function setPose() {
+  const cE = ease(state.circle);
+  const cy = PIT + CIRCLE.lift * cE;            // 顶面相对坑底
+  circleTop.position.y = cy;
+  skirt.scale.y = Math.max(cy - 0.08, 0.001); skirt.position.y = -0.08 - skirt.scale.y / 2;
+  circleScissor.update(cy - 0.08 - 0.05);
+
+  stepRigs.forEach((s, i) => {
+    // 三条依次启动：后排先起、先落
+    const offset = i * 0.12;
+    const t = Math.min(Math.max((state.steps - offset) / (1 - 0.24), 0), 1);
+    const y = PIT + s.lift * ease(t);
+    s.top.position.y = y;
+    const fh = Math.max(y - PIT, 0.001);
+    s.front.scale.y = fh; s.front.position.y = -fh / 2 - 0.0; s.front.visible = fh > 0.01;
+    s.scissors.forEach(sc => sc.update(y - 0.08 - 0.05));
+  });
+
+  const mm = Math.round(CIRCLE.lift * 1000 * cE);
+  document.getElementById('cTxt').textContent = `+${mm} mm`;
+  document.getElementById('cBar').style.width = (cE * 100) + '%';
+  const sE = ease(state.steps);
+  document.getElementById('sTxt').textContent = sE < 0.005 ? '水平平台' : sE > 0.995 ? '三级台阶 250/500/750' : `升降中 ${Math.round(sE * 100)}%`;
+  document.getElementById('sBar').style.width = (sE * 100) + '%';
+}
+
+function approach(v, target, rate, dt) {
+  const d = target - v, step = rate * dt;
+  return Math.abs(d) <= step ? target : v + Math.sign(d) * step;
+}
+
+// 完整演示：台阶升起 → 圆台升起 → 停留 → 圆台降下 → 台阶合并
+const DEMO = [
+  { wait: 0.8 },
+  { stepsTarget: 1 }, { untilSteps: 1 }, { wait: 0.6 },
+  { circleTarget: 1 }, { untilCircle: 1 }, { wait: 2.0 },
+  { circleTarget: 0 }, { untilCircle: 0 }, { wait: 0.6 },
+  { stepsTarget: 0 }, { untilSteps: 0 }, { wait: 1.0 },
+];
+function runDemo(dt) {
+  if (!demo) return;
+  const st = DEMO[demo.i];
+  if (!st) { demo.i = 0; return; } // 循环
+  if (st.wait != null) { demo.t += dt * speed; if (demo.t >= st.wait) { demo.i++; demo.t = 0; } return; }
+  if (st.stepsTarget != null) { state.stepsTarget = st.stepsTarget; demo.i++; return; }
+  if (st.circleTarget != null) { state.circleTarget = st.circleTarget; demo.i++; return; }
+  if (st.untilSteps != null && state.steps === st.untilSteps) demo.i++;
+  if (st.untilCircle != null && state.circle === st.untilCircle) demo.i++;
+}
+
+const demoBtn = document.querySelector('[data-act=demo]');
+function stopDemo() { demo = null; demoBtn.textContent = '▶ 完整演示'; }
+document.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () => {
+  const act = b.dataset.act;
+  if (act !== 'demo') stopDemo();
+  if (act === 'circleUp') state.circleTarget = 1;
+  if (act === 'circleDown') state.circleTarget = 0;
+  if (act === 'stepsUp') state.stepsTarget = 1;
+  if (act === 'stepsDown') state.stepsTarget = 0;
+  if (act === 'reset') { state.circle = state.circleTarget = state.steps = state.stepsTarget = 0; }
+  if (act === 'demo') {
+    if (demo) stopDemo();
+    else { demo = { i: 0, t: 0 }; demoBtn.textContent = '■ 停止演示'; }
+  }
+}));
+const sp = document.getElementById('speed');
+sp.addEventListener('input', () => { speed = +sp.value; document.getElementById('spTxt').textContent = speed + '×'; });
+document.getElementById('xray').addEventListener('change', e => {
+  const on = e.target.checked;
+  M.body.opacity = on ? 0.28 : 1; M.body.depthWrite = !on; M.body.transparent = on;
+  M.deck.opacity = on ? 0.55 : 1; M.deck.transparent = on;
+  M.body.needsUpdate = M.deck.needsUpdate = true;
+});
+document.getElementById('spin').addEventListener('change', e => { controls.autoRotate = e.target.checked; controls.autoRotateSpeed = 0.6; });
+
+function resize() {
+  // 手机预览为控制面板留出空间，不改变模型或动画。
+  const panel = document.querySelector('.panel');
+  root.style.bottom = innerWidth <= 600 ? (panel.offsetHeight + 32) + 'px' : '0';
+  const w = root.clientWidth, h = root.clientHeight;
+  renderer.setSize(w, h); camera.aspect = w / h;
+  // 竖屏时拉远
+  camera.fov = w < h ? 55 : 38;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+new ResizeObserver(resize).observe(document.querySelector('.panel'));
+resize();
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  runDemo(dt);
+  state.circle = approach(state.circle, state.circleTarget, BASE_SPEED_C * speed, dt);
+  state.steps  = approach(state.steps,  state.stepsTarget,  BASE_SPEED_S * speed, dt);
+  setPose();
+  controls.update();
+  renderer.render(scene, camera);
+});
+// 方便调试/录屏
+window.__stage = { state, setPose, scene, camera, controls, deck, circleTop, THREE };
+</script>
+</body>
+</html>
